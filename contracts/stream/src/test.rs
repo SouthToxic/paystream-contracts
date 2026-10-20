@@ -869,6 +869,72 @@ fn test_top_up_zero_amount_rejected() {
 }
 
 // ---------------------------------------------------------------------------
+// SEC-23 – Allowance pre-check in top_up
+// ---------------------------------------------------------------------------
+
+/// top_up must panic with "insufficient allowance" when the employer has not
+/// approved the stream contract for the requested amount.
+///
+/// The check must fire before any stream state is mutated, so the stream
+/// deposit is unchanged after the panicking call.
+#[test]
+#[should_panic(expected = "insufficient allowance")]
+fn test_top_up_insufficient_allowance_rejected() {
+    use paystream_token::TokenContractClient;
+
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let stream_id_val = env.register(StreamContract, ());
+    let client = StreamContractClient::new(&env, &stream_id_val);
+
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+    let token = TokenContractClient::new(&env, &token_id);
+
+    client.initialize(&admin);
+    let id = client.create_stream(&employer, &employee, &token_id, &10_000, &1, &0, &None);
+
+    // Deliberately grant zero allowance to the stream contract — top_up must
+    // detect this before calling transfer_from and panic with a clear message.
+    token.approve(&employer, &stream_id_val, &0, &9999);
+
+    client.top_up(&employer, &id, &500, &None);
+}
+
+/// top_up succeeds when the employer has approved exactly the top-up amount.
+#[test]
+fn test_top_up_exact_allowance_succeeds() {
+    use paystream_token::TokenContractClient;
+
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let stream_id_val = env.register(StreamContract, ());
+    let client = StreamContractClient::new(&env, &stream_id_val);
+
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+    let token = TokenContractClient::new(&env, &token_id);
+
+    client.initialize(&admin);
+    let id = client.create_stream(&employer, &employee, &token_id, &5_000, &1, &0, &None);
+
+    let top_up_amount: i128 = 1_000;
+    // Approve exactly the top-up amount.
+    token.approve(&employer, &stream_id_val, &top_up_amount, &9999);
+
+    client.top_up(&employer, &id, &top_up_amount, &None);
+
+    let stream = client.get_stream(&id);
+    assert_eq!(stream.deposit, 5_000 + top_up_amount, "deposit must increase by top-up amount");
+}
+
+// ---------------------------------------------------------------------------
 // Issue #27 – update_rate: change stream rate without cancel/recreate
 // ---------------------------------------------------------------------------
 
@@ -1728,6 +1794,7 @@ fn test_is_paused_reflects_pause_unpause() {
 #[should_panic(expected = "E004")]
 fn test_top_up_deposit_overflow_uses_err_overflow() {
     use crate::storage::save_stream;
+    use paystream_token::TokenContractClient;
 
     let (env, client) = setup();
     let admin = Address::generate(&env);
@@ -1744,6 +1811,10 @@ fn test_top_up_deposit_overflow_uses_err_overflow() {
         stream.deposit = i128::MAX;
         save_stream(&env, &stream);
     });
+
+    // Grant allowance so the pre-check passes; the overflow fires after.
+    let token = TokenContractClient::new(&env, &token_id);
+    token.approve(&employer, &client.address, &1_i128, &9999);
 
     // top_up with 1 should panic with E004, not a generic "deposit overflow" message.
     client.top_up(&employer, &id, &1, &None);
@@ -3651,6 +3722,8 @@ mod events {
     ///           data = (employer, amount)
     #[test]
     fn test_event_topped_up() {
+        use paystream_token::TokenContractClient;
+
         let (env, client) = setup();
         let admin = Address::generate(&env);
         let employer = Address::generate(&env);
@@ -3659,6 +3732,9 @@ mod events {
 
         client.initialize(&admin);
         let id = client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0, &None);
+        // SEC-23: top_up now requires prior approval.
+        let token = TokenContractClient::new(&env, &token_id);
+        token.approve(&employer, &client.address, &5_000_i128, &9999);
         client.top_up(&employer, &id, &5_000, &None);
 
         let events = env.events().all();
@@ -4598,4 +4674,200 @@ fn test_transfer_stream_new_employer_can_manage() {
 
     client.cancel_stream(&new_employer, &id);
     assert_eq!(client.get_stream(&id).status, StreamStatus::Cancelled);
+}
+
+// ---------------------------------------------------------------------------
+// TEST-35 – Golden-file test for full stream lifecycle JSON output
+// ---------------------------------------------------------------------------
+//
+// This test runs a complete stream lifecycle (create → top_up → withdraw →
+// pause → resume → cancel) and serialises the stream state at each step to a
+// deterministic JSON object.  The serialised output is compared against the
+// committed golden file at:
+//
+//   contracts/stream/test_snapshots/lifecycle/full_lifecycle.json
+//
+// If the output differs from the golden file the test fails, catching any
+// unintended state-shape regressions introduced by future refactors.
+//
+// # Updating the golden file
+//
+// Run the suite with the UPDATE_GOLDEN environment variable set:
+//
+//   UPDATE_GOLDEN=1 cargo test --package paystream-stream test_full_stream_lifecycle_golden
+//
+// Review the diff in the golden file before committing.  A change in the
+// golden file means the on-chain stream schema changed; consumers must be
+// updated in the same PR.
+
+/// Serialise a `StreamStatus` variant to a JSON string literal.
+fn status_to_json(status: &StreamStatus) -> &'static str {
+    match status {
+        StreamStatus::Active => "\"Active\"",
+        StreamStatus::Paused => "\"Paused\"",
+        StreamStatus::Cancelled => "\"Cancelled\"",
+        StreamStatus::Exhausted => "\"Exhausted\"",
+    }
+}
+
+/// Render a single stream-state snapshot as a JSON object.
+///
+/// Addresses are omitted (they are random per-run); only numeric, boolean,
+/// and status fields — which are deterministic — are included.  This keeps
+/// the golden file stable across test runs regardless of address generation.
+fn stream_state_to_json(
+    label: &str,
+    stream: &crate::types::Stream,
+    claimable: i128,
+) -> std::string::String {
+    std::format!(
+        r#"  {{
+    "step": "{label}",
+    "id": {id},
+    "deposit": {deposit},
+    "withdrawn": {withdrawn},
+    "rate_per_second": {rps},
+    "start_time": {start_time},
+    "stop_time": {stop_time},
+    "last_withdraw_time": {lwt},
+    "status": {status},
+    "pending_accrual": {pending},
+    "locked": {locked},
+    "low_balance_threshold": {lbt},
+    "claimable": {claimable}
+  }}"#,
+        label = label,
+        id = stream.id,
+        deposit = stream.deposit,
+        withdrawn = stream.withdrawn,
+        rps = stream.rate_per_second,
+        start_time = stream.start_time,
+        stop_time = stream.stop_time,
+        lwt = stream.last_withdraw_time,
+        status = status_to_json(&stream.status),
+        pending = stream.pending_accrual,
+        locked = stream.locked,
+        lbt = stream.low_balance_threshold,
+        claimable = claimable,
+    )
+}
+
+/// Full stream lifecycle golden-file test.
+///
+/// Covers all `StreamStatus` transitions:
+///   Active → (top_up) → Active → (withdraw partial) → Active
+///   → (pause) → Paused → (resume) → Active → (cancel) → Cancelled
+#[test]
+fn test_full_stream_lifecycle_golden() {
+    use paystream_token::TokenContractClient;
+
+    let env = Env::default();
+    env.mock_all_auths();
+
+    // Use a fixed starting timestamp so the golden file is deterministic.
+    env.ledger().with_mut(|l| {
+        l.timestamp = 1_000_000;
+        l.sequence_number = 100;
+    });
+
+    let stream_contract_id = env.register(StreamContract, ());
+    let client = StreamContractClient::new(&env, &stream_contract_id);
+
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+    let token = TokenContractClient::new(&env, &token_id);
+
+    client.initialize(&admin);
+
+    // ── Step 1: create ─────────────────────────────────────────────────────
+    // deposit=10_000, rate=10/s, no stop_time
+    let id = client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0, &None);
+    let s1 = client.get_stream(&id);
+    let c1 = client.claimable(&id);
+
+    // ── Step 2: top_up ─────────────────────────────────────────────────────
+    // Advance 100 s then top up with 5_000 more tokens.
+    env.ledger().with_mut(|l| {
+        l.timestamp += 100;
+        l.sequence_number += 10;
+    });
+    token.approve(
+        &employer,
+        &stream_contract_id,
+        &5_000_i128,
+        &(env.ledger().sequence() + 100),
+    );
+    client.top_up(&employer, &id, &5_000, &None);
+    let s2 = client.get_stream(&id);
+    let c2 = client.claimable(&id);
+
+    // ── Step 3: withdraw ───────────────────────────────────────────────────
+    // Advance another 50 s and withdraw all claimable tokens.
+    env.ledger().with_mut(|l| {
+        l.timestamp += 50;
+        l.sequence_number += 5;
+    });
+    client.withdraw(&employee, &id);
+    let s3 = client.get_stream(&id);
+    let c3 = client.claimable(&id);
+
+    // ── Step 4: pause ──────────────────────────────────────────────────────
+    env.ledger().with_mut(|l| {
+        l.timestamp += 10;
+        l.sequence_number += 1;
+    });
+    client.pause_stream(&employer, &id);
+    let s4 = client.get_stream(&id);
+    let c4 = client.claimable(&id);
+
+    // ── Step 5: resume ─────────────────────────────────────────────────────
+    // Advance 30 s while paused (should NOT accrue), then resume.
+    env.ledger().with_mut(|l| {
+        l.timestamp += 30;
+        l.sequence_number += 3;
+    });
+    client.resume_stream(&employer, &id);
+    let s5 = client.get_stream(&id);
+    let c5 = client.claimable(&id);
+
+    // ── Step 6: cancel ─────────────────────────────────────────────────────
+    // Advance 20 s then cancel the stream.
+    env.ledger().with_mut(|l| {
+        l.timestamp += 20;
+        l.sequence_number += 2;
+    });
+    client.cancel_stream(&employer, &id);
+    let s6 = client.get_stream(&id);
+    let c6 = client.claimable(&id);
+
+    // ── Serialise all steps ────────────────────────────────────────────────
+    let snapshots = [
+        stream_state_to_json("create", &s1, c1),
+        stream_state_to_json("top_up", &s2, c2),
+        stream_state_to_json("withdraw", &s3, c3),
+        stream_state_to_json("pause", &s4, c4),
+        stream_state_to_json("resume", &s5, c5),
+        stream_state_to_json("cancel", &s6, c6),
+    ];
+    let actual = std::format!("[\n{}\n]\n", snapshots.join(",\n"));
+
+    // ── Golden-file comparison or update ──────────────────────────────────
+    let golden_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("test_snapshots/lifecycle/full_lifecycle.json");
+
+    if std::env::var("UPDATE_GOLDEN").is_ok() {
+        std::fs::create_dir_all(golden_path.parent().unwrap()).unwrap();
+        std::fs::write(&golden_path, &actual).expect("failed to write golden file");
+        return; // updating — no comparison needed
+    }
+
+    let expected = std::fs::read_to_string(&golden_path)
+        .expect("golden file not found; run with UPDATE_GOLDEN=1 to generate it");
+
+    assert_eq!(
+        actual, expected,
+        "stream lifecycle golden file mismatch — run with UPDATE_GOLDEN=1 to regenerate"
+    );
 }

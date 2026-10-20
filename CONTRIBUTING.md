@@ -575,6 +575,29 @@ SOROBAN_TEST_SNAPSHOTS=update cargo test --package paystream-stream events::test
 
 Always review the diff of regenerated snapshot files before committing. A snapshot change means the on-chain event schema changed — indexers and off-chain consumers must be updated in the same PR.
 
+#### Updating the lifecycle golden file
+
+The full lifecycle golden file is stored at:
+
+```
+contracts/stream/test_snapshots/lifecycle/full_lifecycle.json
+```
+
+It captures serialised stream state at each step of the lifecycle (`create` → `top_up` →
+`withdraw` → `pause` → `resume` → `cancel`) and is compared by
+`test_full_stream_lifecycle_golden`.  The file must be regenerated whenever the `Stream`
+struct fields or their default values change.
+
+To regenerate:
+
+```bash
+UPDATE_GOLDEN=1 cargo test --package paystream-stream test_full_stream_lifecycle_golden
+```
+
+Review the diff carefully before committing.  A change to the golden file means the
+observable on-chain stream schema has changed; update any off-chain consumers (indexers,
+dashboards, SDKs) in the same PR.
+
 ---
 
 ## Writing Fuzz Targets
