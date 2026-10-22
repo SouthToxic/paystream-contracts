@@ -108,11 +108,27 @@ deployment. See [audits/remediation.md](audits/remediation.md) for the full stat
 
 ---
 
+## Admin Multi-Sig Requirement (Mainnet)
+
+Admin key compromise is a **Critical** residual risk in the threat model (RR-01). To
+mitigate it, the admin address on **mainnet** must be a multi-sig account — either a
+Stellar native multisig account or a deployed multisig contract — with a **minimum
+2-of-3 signer threshold**. A single-key admin is not permitted on mainnet.
+
+Full setup, onboarding checklist, and verification steps are documented in
+[docs/security/admin-multisig.md](docs/security/admin-multisig.md). All admin calls
+(including pause/resume, upgrades, and key rotation) must be signed by the multisig
+per the operations runbook.
+
+---
+
 ## Key Rotation
 
 If the admin keypair needs to be rotated (planned or emergency), follow the
 step-by-step runbook in
-[docs/security/key-rotation.md](docs/security/key-rotation.md).
+[docs/security/key-rotation.md](docs/security/key-rotation.md). On mainnet, rotation
+must be executed through the admin multisig described in
+[docs/security/admin-multisig.md](docs/security/admin-multisig.md).
 
 ---
 
