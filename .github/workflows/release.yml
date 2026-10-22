@@ -146,6 +146,52 @@ jobs:
           echo "token=$(deploy paystream_token.wasm)" >> "$GITHUB_OUTPUT"
           echo "stream=$(deploy paystream_stream.wasm)" >> "$GITHUB_OUTPUT"
 
+      - name: Verify deployed WASM checksums
+        if: steps.flag.outputs.enabled == 'true' && env.DRY_RUN != 'true'
+        env:
+          TOKEN_ID: ${{ steps.deploy.outputs.token }}
+          STREAM_ID: ${{ steps.deploy.outputs.stream }}
+        run: |
+          set -euo pipefail
+          WASM_DIR="target/wasm32-unknown-unknown/release"
+          {
+            echo "## Post-deploy WASM checksum verification"
+            echo ""
+            echo "| Contract | Local SHA256 | Deployed WASM hash | Result |"
+            echo "| --- | --- | --- | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          verify() {
+            local name="$1" wasm="$2" contract_id="$3"
+            if [ -z "$contract_id" ]; then
+              echo "::error::No contract ID for $name; cannot verify checksum"
+              echo "| $name | n/a | n/a | ❌ missing contract ID |" >> "$GITHUB_STEP_SUMMARY"
+              return 1
+            fi
+            local local_hash deployed_hash
+            local_hash=$(sha256sum "$WASM_DIR/$wasm" | awk '{print $1}')
+            deployed_hash=$(stellar contract info --id "$contract_id" --network testnet 2>/dev/null \
+              | grep -iE 'wasm.?hash' | head -n1 | grep -oE '[0-9a-fA-F]{64}' | tr 'A-F' 'a-f' || true)
+            if [ -z "$deployed_hash" ]; then
+              echo "::error::Could not extract WASM hash for $name ($contract_id)"
+              echo "| $name | \`$local_hash\` | n/a | ❌ hash not found |" >> "$GITHUB_STEP_SUMMARY"
+              return 1
+            fi
+            if [ "$local_hash" = "$deployed_hash" ]; then
+              echo "::notice::$name checksum verified ($local_hash)"
+              echo "| $name | \`$local_hash\` | \`$deployed_hash\` | ✅ match |" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::error::$name checksum mismatch: local=$local_hash deployed=$deployed_hash"
+              echo "| $name | \`$local_hash\` | \`$deployed_hash\` | ❌ mismatch |" >> "$GITHUB_STEP_SUMMARY"
+              return 1
+            fi
+          }
+
+          status=0
+          verify "PayStream Token" paystream_token.wasm "$TOKEN_ID" || status=1
+          verify "PayStream Stream" paystream_stream.wasm "$STREAM_ID" || status=1
+          exit "$status"
+
       - name: Update docs/testnet.md
         if: steps.flag.outputs.enabled == 'true' && env.DRY_RUN != 'true'
         env:
