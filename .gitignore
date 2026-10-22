@@ -1,3 +1,21 @@
-target/
-.env
+# Rust build artifacts
+/target
+**/target
+
+# Soroban / Stellar CLI artifacts
+.wash/
 *.wasm
+!contracts/**/testdata/*.wasm
+
+# Environment files with secrets
+deploy/mainnet.env
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Local env
+.env
+.env.local

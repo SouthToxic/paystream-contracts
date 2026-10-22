@@ -40,7 +40,14 @@ deploy-local:
 	./scripts/deploy-local.sh
 
 deploy-testnet:
-	./scripts/deploy-testnet.sh
+	@set -a; . deploy/testnet.env; set +a; ./scripts/deploy-testnet.sh
+
+deploy-mainnet:
+	@if [ ! -f deploy/mainnet.env ]; then \
+		echo "Missing deploy/mainnet.env. Copy deploy/mainnet.env.example and fill in values."; \
+		exit 1; \
+	fi
+	@set -a; . deploy/mainnet.env; set +a; ./scripts/deploy-testnet.sh
 
 # Export an employer's streams as CSV for payroll reconciliation.
 # Add JSON=1 to emit JSON instead of CSV, NETWORK=local to query another network.
@@ -80,4 +87,3 @@ stream-status:
 		exit 1; \
 	fi
 	@./scripts/stream-status.sh "$(CONTRACT_ID)" "$(EMPLOYER)" "$(NETWORK)"
-
