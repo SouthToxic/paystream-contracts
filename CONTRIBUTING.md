@@ -22,6 +22,7 @@ Thank you for contributing to PayStream — a Soroban smart contract system for 
 - [Pull Request Process](#pull-request-process)
 - [Changelog](#changelog)
 - [Testing Requirements](#testing-requirements)
+  - [Updating Snapshots](#updating-snapshots)
 - [Writing Fuzz Targets](#writing-fuzz-targets)
 - [Code Review Expectations](#code-review-expectations)
 - [Release Process](#release-process)
@@ -576,6 +577,34 @@ SOROBAN_TEST_SNAPSHOTS=update cargo test --package paystream-stream events::test
 ```
 
 Always review the diff of regenerated snapshot files before committing. A snapshot change means the on-chain event schema changed — indexers and off-chain consumers must be updated in the same PR.
+
+### Updating Snapshots
+
+PayStream uses the Soroban SDK's built-in snapshot testing (not `insta`), so the project equivalent of `INSTA_UPDATE=unseen cargo test` is the `SOROBAN_TEST_SNAPSHOTS` variable. Snapshot JSON files live in:
+
+- [`contracts/stream/test_snapshots/`](contracts/stream/test_snapshots/)
+- [`contracts/token/test_snapshots/`](contracts/token/test_snapshots/)
+
+Regenerate snapshots for the whole workspace or one package:
+
+```bash
+SOROBAN_TEST_SNAPSHOTS=update cargo test
+SOROBAN_TEST_SNAPSHOTS=update cargo test --package paystream-stream
+```
+
+Then review with `git diff -- '*/test_snapshots/*'` before committing.
+
+**Expected (intentional) changes** — update the snapshot and commit it in the same PR:
+- You changed an event topic/payload, storage layout, error code, or return value on purpose.
+- You added a new test (new snapshot file) or renamed one.
+- You bumped `soroban-sdk`, which can change snapshot metadata.
+
+**Unexpected changes (likely a regression)** — do not regenerate; fix the code:
+- The diff touches tests or contracts unrelated to your change.
+- Balances, amounts, ledger entries, or event data changed when you only refactored.
+- Snapshot files were deleted without the corresponding test being removed.
+
+If in doubt, mention the snapshot diff in your PR description so reviewers can confirm it is intentional.
 
 ---
 

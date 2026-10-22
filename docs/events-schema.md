@@ -164,6 +164,45 @@ Emitted when an employer adds more funds to an existing stream.
 
 ---
 
+### auto_topup_set
+
+Emitted by `set_auto_topup` (`enabled = true`) and `cancel_auto_topup` (`enabled = false`).
+
+**Topic**: `["v1", "at_set", <stream_id>]`
+
+**Data**:
+- `enabled` (bool): `true` when configured, `false` when cancelled
+
+**Example**:
+```json
+{
+  "topic": ["v1", "at_set", 1],
+  "data": true
+}
+```
+
+---
+
+### auto_topped_up
+
+Emitted after a `withdraw` / `withdraw_all` when an auto top-up successfully pulls funds from the employer.
+
+**Topic**: `["v1", "at_up", <stream_id>]`
+
+**Data**:
+- `amount` (i128): Amount added to the stream by this top-up
+- `total_topped_up` (i128): Cumulative auto top-up total after this top-up
+
+**Example**:
+```json
+{
+  "topic": ["v1", "at_up", 1],
+  "data": [500000, 500000]
+}
+```
+
+---
+
 ### contract_paused
 
 Emitted when the contract-wide pause flag is toggled.
