@@ -222,6 +222,10 @@ Time is capped at `stop_time` if set. Paused time is excluded. See the [worked e
 - [FAQ](docs/faq.md) — common integrator questions
 - [Operations Runbook](docs/operations-runbook.md) — admin procedures (nonce, pause, min deposit, admin transfer, upgrade)
 - [Migration Guide v0.1 → v0.2](docs/migration/v0.1-to-v0.2.md) — breaking changes, new error codes, and event schema changes
+- [Stellar Primer](docs/stellar-primer.md) — Soroban concepts for developers coming from EVM chains
+- [Upgrade Runbook](docs/upgrade-runbook.md) — time-locked WASM upgrade, rollback, and emergency procedure
+- [Storage Layout](docs/storage-layout.md) — every `DataKey` for indexer builders
+- [Architecture Decision Records](docs/adr/README.md)
 
 ---
 
