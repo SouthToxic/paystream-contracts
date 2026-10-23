@@ -340,7 +340,9 @@ Looking for tasks to contribute to?
 3. Stuck? Ping a maintainer in [GitHub Discussions](https://github.com/veracindarella/paystream-contracts/discussions) — every good first issue has a mentor available.
 4. Keep the PR small and reference the issue with `Closes #<number>`.
 
-New to Rust, Soroban or open source? Start with the step-by-step [First Contribution Guide](docs/first-contribution.md).
+New to Rust, Soroban or open source? Start with the step-by-step [First Contribution Guide](docs/first-contribution.md). Coming from Ethereum/EVM? Read the [Stellar Primer](docs/stellar-primer.md) first.
+
+> **Adding a `DataKey`?** Update the table in [docs/storage-layout.md](docs/storage-layout.md) in the same PR. **Making a significant design decision?** Add an ADR under [docs/adr/](docs/adr/README.md).
 
 ---
 
