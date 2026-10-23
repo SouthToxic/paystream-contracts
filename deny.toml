@@ -3,6 +3,14 @@
 #
 # Run locally:  cargo deny check
 # CI:           see .github/workflows/deny.yml
+#
+# Division of responsibility between the two security tools:
+#   * cargo-deny  (this file, .github/workflows/deny.yml) — license policy,
+#     banned/duplicate crates, allowed registries, and advisory checks driven
+#     by the RustSec database via the [advisories] section below.
+#   * cargo-audit (.github/workflows/audit.yml) — dedicated RustSec advisory
+#     scan that fails CI on any high/critical CVE. It is run separately so a
+#     known CVE always blocks a push even if cargo-deny config changes.
 
 [graph]
 # Check all targets, including wasm32-unknown-unknown
@@ -47,6 +55,9 @@ include-dev = true
 # ---------------------------------------------------------------------------
 # Advisories  (vulnerability database)
 # ---------------------------------------------------------------------------
+# NOTE: cargo-deny's advisory check here is complementary to cargo-audit in
+# .github/workflows/audit.yml. cargo-audit is the authoritative CVE gate that
+# fails CI on high/critical advisories; keep both in sync when ignoring.
 [advisories]
 # Fetch the RustSec advisory database on every run.
 db-urls = ["https://github.com/rustsec/advisory-db"]

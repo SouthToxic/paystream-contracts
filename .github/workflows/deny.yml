@@ -1,5 +1,9 @@
 name: cargo-deny
 
+# cargo-deny handles license compliance and banned/duplicate crate policy
+# (see deny.toml). It does NOT query the RustSec advisory database for known
+# CVEs — that is the job of the cargo-audit workflow (audit.yml).
+
 on:
   push:
     branches: [main]

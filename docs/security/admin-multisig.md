@@ -1,6 +1,6 @@
-# Admin Multisig Setup for Mainnet (SEC-01)
+# Admin Multisig Setup for Mainnet (SEC-01 / SEC-30)
 
-**Issue:** #30  
+**Issue:** #30, #268  
 **Status:** Design  
 **Priority:** Critical  
 **Dependency:** SC-01 (LOW-02 fix — `initialize` guard) should be merged first
@@ -16,9 +16,11 @@ an attacker can:
 - Change the minimum deposit
 - Upgrade the contract WASM to arbitrary code
 
-For mainnet, the admin **must** be a multisig account. This document covers the recommended
-setup, two approaches (Stellar native multisig and a deployed multisig contract), and the
-steps to verify admin operations work through multisig auth in the Soroban test environment.
+For mainnet, the admin **must** be a multisig account with a **minimum 2-of-3 signer
+configuration**. This document covers the recommended setup, two approaches (Stellar native
+multisig and a deployed multisig contract), the onboarding checklist for transferring admin to
+a multisig, the operations runbook for admin calls, and the steps to verify admin operations
+work through multisig auth on testnet before mainnet deployment.
 
 ---
 
@@ -109,9 +111,63 @@ stellar contract invoke --id <STREAM_ID> --source <DEPLOYER_KEY> --network mainn
 
 ---
 
+## Mainnet Onboarding Checklist
+
+Follow these steps in order to move the mainnet admin from a single keypair to a 2-of-3
+multisig. Do not skip the on-chain verification step.
+
+- [ ] **1. Create the multisig account.** Create a dedicated admin Stellar account and add
+  signers B and C (weights `1` each), then set `low/medium/high` thresholds to `2` as shown
+  in the Setup section above. Confirm the master weight is `1` so no single key can act alone.
+- [ ] **2. Verify the multisig config.** Run `stellar account show --account <ADMIN_ACCOUNT>`
+  and confirm three signers with weight `1` and thresholds `low: 2, medium: 2, high: 2`.
+- [ ] **3. Transfer admin.** Point the contract admin at the multisig account. If the contract
+  is not yet initialized, pass the multisig address directly to `initialize --admin`. If it is
+  already initialized with a single-key admin, use the contract's admin-transfer path (or
+  re-initialize per the upgrade procedure) so the new admin is the multisig address.
+- [ ] **4. Verify the transfer on-chain.** Query the contract's stored admin and confirm it
+  equals the multisig account address:
+
+  ```bash
+  stellar contract invoke --id <STREAM_ID> --network mainnet \
+    -- get_admin
+  ```
+
+  The returned address must match `<ADMIN_ACCOUNT>` (or `<MULTISIG_CONTRACT_ADDRESS>` for the
+  contract-based approach).
+- [ ] **5. Exercise an admin call through multisig.** Perform a low-risk admin operation
+  (e.g., a no-op `set_min_deposit` to its current value) using the 2-of-3 signing flow and
+  confirm it succeeds only with two signatures.
+- [ ] **6. Record the configuration.** Update `docs/security/threat-model.md` (RR-01) with the
+  actual signer set and threshold used.
+
+---
+
+## Operations Runbook: Admin Calls
+
+All mainnet admin calls **must** go through the multisig signing flow. A single signer must
+never be able to submit an admin transaction.
+
+1. **Prepare.** The proposer builds the admin transaction with `--build-only` using their own
+   key as `--source` (see "Signing admin transactions" above).
+2. **Collect signatures.** At least **2 of 3** signers must sign the XDR. Distribute the
+   unsigned XDR to the co-signers out-of-band; each signs with `stellar tx sign`.
+3. **Verify threshold.** Before submitting, confirm the transaction carries at least two valid
+   signatures from distinct signers. A transaction with fewer than two signatures will fail
+   the account threshold and must not be submitted.
+4. **Submit.** Submit the fully-signed XDR with `stellar tx submit`.
+5. **Confirm.** Verify the operation took effect on-chain (e.g., re-query contract state) and
+   record the transaction hash in the operations log.
+
+Applies to every admin entry point: `pause_contract`, `unpause_contract`, `set_min_deposit`,
+and any contract upgrade / WASM replacement.
+
+---
+
 ## Testnet Verification
 
-To demonstrate that admin operations work via multisig auth in the Soroban test environment:
+Admin operations must be verified on testnet before mainnet deployment. To demonstrate that
+admin operations work via multisig auth in the Soroban test environment:
 
 ### In `contracts/stream/src/test.rs`
 
@@ -138,6 +194,9 @@ fn test_admin_operations_via_multisig() {
 }
 ```
 
+On testnet, run the full onboarding checklist above against a testnet multisig account and
+confirm that admin calls succeed with 2 signatures and fail with 1 before promoting to mainnet.
+
 ---
 
 ## Deploy Script Update
@@ -158,8 +217,8 @@ address (including multisig accounts) is valid.
 ## Threat Model Reference
 
 This setup mitigates **RR-01** (admin key compromise) from `docs/security/threat-model.md`.
-Once a multisig admin is in place, an attacker must compromise at least 2 of the 3 signing
-keys to gain admin control — a significantly higher bar than a single keypair.
+Once a 2-of-3 multisig admin is in place, an attacker must compromise at least 2 of the 3
+signing keys to gain admin control — a significantly higher bar than a single keypair.
 
 Update the threat model after mainnet deployment to reflect the actual signer configuration
 and threshold used.
@@ -169,6 +228,10 @@ and threshold used.
 ## Acceptance Criteria
 
 - [x] Recommended multisig setup documented in `docs/security/admin-multisig.md`
+- [x] Minimum 2-of-3 signers required (thresholds set to `2`, three signers of weight `1`)
+- [x] Onboarding checklist: create multisig account, transfer admin, verify transfer on-chain
+- [x] Operations runbook updated: all admin calls include multisig signing steps
+- [x] Testnet verification steps documented (must pass before mainnet deployment)
 - [x] `init-testnet.sh` compatible with a multisig admin address (no changes needed — it already accepts any address via `STELLAR_ADMIN_ADDRESS`)
 - [x] Deploy scripts include multisig signer setup instructions (see above)
 - [x] Threat model updated to reflect RR-01 mitigation (see below)
