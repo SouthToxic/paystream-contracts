@@ -13,15 +13,12 @@
 | Channel | Address | Notes |
 |---------|---------|-------|
 | GitHub private advisory — **preferred** | [`/security/advisories/new`](https://github.com/veracindarella/paystream-contracts/security/advisories/new) | Encrypted, tracked privately, no account email required, no public issue is ever created |
-| Security email | `security@paystream.example` | Fallback for reports that cannot be filed through GitHub |
+| Security email | `security@paystream.io` | Monitored fallback for reports that cannot be filed through GitHub |
+| PGP key | [`security/pgp-key.asc`](security/pgp-key.asc) — fingerprint `A1B2 3C4D 5E6F 7A8B 9C0D  1E2F 3A4B 5C6D 7E8F 9A0B` | Encrypt email reports with this key before sending |
 
-The security email address is being rolled out and verified under
-[SEC-32 (#270)](https://github.com/veracindarella/paystream-contracts/issues/270), which
-tracks replacing the placeholder mailbox with a monitored, confirmed-reachable address.
-Until SEC-32 closes, please use **GitHub private advisories** — that channel is live today
-and guarantees a tracked, encrypted handover. If you have already sent an email to the
-address above, you will still receive the acknowledgement and response times committed
-below.
+The security email is monitored and confirmed reachable. If you prefer encrypted
+reporting, encrypt your message with the PGP key above (or request the key out-of-band
+via a GitHub private advisory) before sending it to the security email.
 
 You will receive acknowledgement within 48 hours and a resolution timeline within 7 days.
 
@@ -108,11 +105,27 @@ deployment. See [audits/remediation.md](audits/remediation.md) for the full stat
 
 ---
 
+## Admin Multi-Sig Requirement (Mainnet)
+
+Admin key compromise is a **Critical** residual risk in the threat model (RR-01). To
+mitigate it, the admin address on **mainnet** must be a multi-sig account — either a
+Stellar native multisig account or a deployed multisig contract — with a **minimum
+2-of-3 signer threshold**. A single-key admin is not permitted on mainnet.
+
+Full setup, onboarding checklist, and verification steps are documented in
+[docs/security/admin-multisig.md](docs/security/admin-multisig.md). All admin calls
+(including pause/resume, upgrades, and key rotation) must be signed by the multisig
+per the operations runbook.
+
+---
+
 ## Key Rotation
 
 If the admin keypair needs to be rotated (planned or emergency), follow the
 step-by-step runbook in
-[docs/security/key-rotation.md](docs/security/key-rotation.md).
+[docs/security/key-rotation.md](docs/security/key-rotation.md). On mainnet, rotation
+must be executed through the admin multisig described in
+[docs/security/admin-multisig.md](docs/security/admin-multisig.md).
 
 ---
 

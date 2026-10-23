@@ -4,14 +4,23 @@ on:
   push:
     tags:
       - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      deploy_mainnet:
+        description: 'Deploy to mainnet (manual only)'
+        type: boolean
+        default: false
 
 env:
   CARGO_TERM_COLOR: always
   STELLAR_CLI_VERSION: 27.0.0
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   release:
     name: Build & Release WASM
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -90,6 +99,45 @@ jobs:
           name: release-wasm
           path: target/wasm32-unknown-unknown/release/*.wasm
 
+  publish-image:
+    name: Publish container image to GHCR
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - name: Build and push multi-stage image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: runtime
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
   deploy-testnet:
     name: Deploy to testnet
     needs: release
@@ -146,6 +194,52 @@ jobs:
           echo "token=$(deploy paystream_token.wasm)" >> "$GITHUB_OUTPUT"
           echo "stream=$(deploy paystream_stream.wasm)" >> "$GITHUB_OUTPUT"
 
+      - name: Verify deployed WASM checksums
+        if: steps.flag.outputs.enabled == 'true' && env.DRY_RUN != 'true'
+        env:
+          TOKEN_ID: ${{ steps.deploy.outputs.token }}
+          STREAM_ID: ${{ steps.deploy.outputs.stream }}
+        run: |
+          set -euo pipefail
+          WASM_DIR="target/wasm32-unknown-unknown/release"
+          {
+            echo "## Post-deploy WASM checksum verification"
+            echo ""
+            echo "| Contract | Local SHA256 | Deployed WASM hash | Result |"
+            echo "| --- | --- | --- | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          verify() {
+            local name="$1" wasm="$2" contract_id="$3"
+            if [ -z "$contract_id" ]; then
+              echo "::error::No contract ID for $name; cannot verify checksum"
+              echo "| $name | n/a | n/a | ❌ missing contract ID |" >> "$GITHUB_STEP_SUMMARY"
+              return 1
+            fi
+            local local_hash deployed_hash
+            local_hash=$(sha256sum "$WASM_DIR/$wasm" | awk '{print $1}')
+            deployed_hash=$(stellar contract info --id "$contract_id" --network testnet 2>/dev/null \
+              | grep -iE 'wasm.?hash' | head -n1 | grep -oE '[0-9a-fA-F]{64}' | tr 'A-F' 'a-f' || true)
+            if [ -z "$deployed_hash" ]; then
+              echo "::error::Could not extract WASM hash for $name ($contract_id)"
+              echo "| $name | \`$local_hash\` | n/a | ❌ hash not found |" >> "$GITHUB_STEP_SUMMARY"
+              return 1
+            fi
+            if [ "$local_hash" = "$deployed_hash" ]; then
+              echo "::notice::$name checksum verified ($local_hash)"
+              echo "| $name | \`$local_hash\` | \`$deployed_hash\` | ✅ match |" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::error::$name checksum mismatch: local=$local_hash deployed=$deployed_hash"
+              echo "| $name | \`$local_hash\` | \`$deployed_hash\` | ❌ mismatch |" >> "$GITHUB_STEP_SUMMARY"
+              return 1
+            fi
+          }
+
+          status=0
+          verify "PayStream Token" paystream_token.wasm "$TOKEN_ID" || status=1
+          verify "PayStream Stream" paystream_stream.wasm "$STREAM_ID" || status=1
+          exit "$status"
+
       - name: Update docs/testnet.md
         if: steps.flag.outputs.enabled == 'true' && env.DRY_RUN != 'true'
         env:
@@ -163,16 +257,65 @@ jobs:
           git commit -m "docs: update testnet contract IDs for ${GITHUB_REF_NAME}"
           git push origin HEAD:main
 
-  provenance:
-    name: SLSA provenance
+  mainnet-dry-run:
+    name: Mainnet deploy dry-run
     needs: release
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    env:
+      STELLAR_RPC_URL: https://soroban-mainnet.stellar.org
+      STELLAR_NETWORK_PASSPHRASE: Public Global Stellar Network ; September 2015
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-wasm
+          path: target/wasm32-unknown-unknown/release
+
+      - name: Install Stellar CLI
+        run: cargo install --locked stellar-cli@${{ env.STELLAR_CLI_VERSION }} --features opt
+
+      - name: Dry-run mainnet deploy
+        env:
+          # Read by the Stellar CLI as the source account; never passed on the command line.
+          STELLAR_ACCOUNT: ${{ secrets.MAINNET_ADMIN_SECRET }}
+        run: |
+          # Fails the job (non-zero exit) if any contract cannot be deployed to mainnet.
+          for wasm in target/wasm32-unknown-unknown/release/*.wasm; do
+            echo "Dry-run deploying ${wasm} to mainnet"
+            stellar contract deploy --dry-run --wasm "${wasm}"
+          done
+
+  deploy-mainnet:
+    name: Deploy to mainnet (manual)
+    if: github.event_name == 'workflow_dispatch' && inputs.deploy_mainnet
+    runs-on: ubuntu-latest
     permissions:
-      actions: read
-      id-token: write
       contents: write
-    # SLSA reusable workflows must be referenced by tag (not SHA) for slsa-verifier to validate provenance.
-    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
-    with:
-      base64-subjects: ${{ needs.release.outputs.hashes }}
-      upload-assets: true
-      provenance-name: paystream-contracts.intoto.jsonl
+    env:
+      STELLAR_RPC_URL: https://soroban-mainnet.stellar.org
+      STELLAR_NETWORK_PASSPHRASE: Public Global Stellar Network ; September 2015
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install Stellar CLI
+        run: cargo install --locked stellar-cli@${{ env.STELLAR_CLI_VERSION }} --features opt
+
+      - name: Build contracts
+        run: stellar contract build
+
+      - name: Deploy contracts to mainnet
+        env:
+          # Read by the Stellar CLI as the source account; never passed on the command line.
+          STELLAR_ACCOUNT: ${{ secrets.MAINNET_ADMIN_SECRET }}
+        run: |
+          for wasm in target/wasm32-unknown-unknown/release/*.wasm; do
+            echo "Deploying ${wasm} to mainnet"
+            stellar contract deploy --wasm "${wasm}"
+          done
