@@ -1,3 +1,4 @@
+.PHONY: build test integration-test fmt fmt-check lint deny clean deploy-local deploy-testnet setup setup-hooks create-stream
 .PHONY: build test integration-test fmt fmt-check lint deny clean deploy-local deploy-testnet setup setup-hooks stream-status
 
 build:
@@ -39,7 +40,68 @@ deploy-local:
 	./scripts/deploy-local.sh
 
 deploy-testnet:
-	./scripts/deploy-testnet.sh
+	@set -a; . deploy/testnet.env; set +a; ./scripts/deploy-testnet.sh
+
+deploy-mainnet:
+	@if [ ! -f deploy/mainnet.env ]; then \
+		echo "Missing deploy/mainnet.env. Copy deploy/mainnet.env.example and fill in values."; \
+		exit 1; \
+	fi
+	@set -a; . deploy/mainnet.env; set +a; ./scripts/deploy-testnet.sh
+
+# Verify the deployed WASM hash matches the locally-built artifact.
+# Usage: make verify-deploy CONTRACT_ID=<ID> [WASM=target/wasm32v1-none/release/paystream_stream.wasm] [NETWORK=testnet]
+verify-deploy:
+	@if [ -z "$(CONTRACT_ID)" ]; then \
+		echo "Usage: make verify-deploy CONTRACT_ID=<ID> [WASM=<path>] [NETWORK=testnet]"; \
+		exit 1; \
+	fi
+	@wasm="$(if $(WASM),$(WASM),target/wasm32v1-none/release/paystream_stream.wasm)"; \
+	if [ ! -f "$$wasm" ]; then \
+		echo "Local WASM artifact not found: $$wasm"; \
+		exit 1; \
+	fi; \
+	network="$(if $(NETWORK),$(NETWORK),testnet)"; \
+	local_hash=$$(sha256sum "$$wasm" | awk '{print $$1}'); \
+	deployed_hash=$$(stellar contract info --id "$(CONTRACT_ID)" --network "$$network" 2>/dev/null | grep -i 'wasm' | grep -oE '[0-9a-fA-F]{64}' | head -n1); \
+	if [ -z "$$deployed_hash" ]; then \
+		echo "Could not extract deployed WASM hash for $(CONTRACT_ID) on $$network"; \
+		exit 1; \
+	fi; \
+	if [ "$$local_hash" = "$$deployed_hash" ]; then \
+		result="✅ MATCH"; \
+		status=0; \
+	else \
+		result="❌ MISMATCH"; \
+		status=1; \
+	fi; \
+	echo "Contract: $(CONTRACT_ID) ($$network)"; \
+	echo "Local SHA256:    $$local_hash"; \
+	echo "Deployed WASM:   $$deployed_hash"; \
+	echo "Result: $$result"; \
+	if [ -n "$$GITHUB_STEP_SUMMARY" ]; then \
+		{ \
+			echo "### Contract checksum verification"; \
+			echo ""; \
+			echo "| Field | Value |"; \
+			echo "| --- | --- |"; \
+			echo "| Contract ID | \`$(CONTRACT_ID)\` |"; \
+			echo "| Network | $$network |"; \
+			echo "| Local SHA256 | \`$$local_hash\` |"; \
+			echo "| Deployed WASM | \`$$deployed_hash\` |"; \
+			echo "| Result | $$result |"; \
+		} >> "$$GITHUB_STEP_SUMMARY"; \
+	fi; \
+	exit $$status
+
+# Export an employer's streams as CSV for payroll reconciliation.
+# Add JSON=1 to emit JSON instead of CSV, NETWORK=local to query another network.
+export-streams:
+	./scripts/export-streams.sh "$(CONTRACT_ID)" "$(EMPLOYER)" $(if $(NETWORK),--network $(NETWORK),) $(if $(JSON),--json,)
+
+# Apply .github/labels.yml to the repository (add --dry-run to preview).
+sync-labels:
+	./scripts/sync-labels.sh
 
 setup:
 	@echo "Setting up development environment..."
@@ -62,10 +124,11 @@ setup-hooks:
 	@echo "The hook will run 'cargo fmt --check' and 'cargo clippy' before each commit."
 	@echo "To skip the hook, use: git commit --no-verify"
 
+create-stream:
+	./scripts/create-stream-wizard.sh
 stream-status:
 	@if [ -z "$(CONTRACT_ID)" ] || [ -z "$(EMPLOYER)" ]; then \
 		echo "Usage: make stream-status CONTRACT_ID=<ID> EMPLOYER=<ADDRESS> [NETWORK=testnet]"; \
 		exit 1; \
 	fi
 	@./scripts/stream-status.sh "$(CONTRACT_ID)" "$(EMPLOYER)" "$(NETWORK)"
-

@@ -524,12 +524,16 @@ Employer pre-authorizes recurring top-ups. After each `withdraw` / `withdraw_all
 | `topup_amount` | `i128` | Amount per top-up (> 0, ≤ `max_total`) |
 | `max_total` | `i128` | Cap on cumulative auto top-ups |
 
+**Auth:** `employer.require_auth()`
+
 **Returns:** nothing
 
 **Errors:**
 - Panics if stream not found or caller is not the employer
 - E005 if stream is Cancelled
-- E025 if parameters are invalid
+- E025 if parameters are invalid (`trigger_threshold ≤ 0`, `topup_amount ≤ 0`, or `topup_amount > max_total`)
+
+**Events:** `at_set` with `enabled = true` (see [events schema](events-schema.md#auto_topup_set))
 
 **Example:**
 ```bash
@@ -551,9 +555,21 @@ Employer revokes a stream's recurring top-up authorization.
 | `employer` | `Address` | Must match the stream's employer |
 | `stream_id` | `u64` | ID of the stream |
 
+**Auth:** `employer.require_auth()`
+
+**Returns:** nothing
+
 **Errors:**
 - Panics if stream not found or caller is not the employer
 - E026 if no auto top-up is configured
+
+**Events:** `at_set` with `enabled = false` (see [events schema](events-schema.md#auto_topup_set))
+
+**Example:**
+```bash
+stellar contract invoke --id <STREAM_ID> --source <EMPLOYER_KEY> --network testnet \
+  -- cancel_auto_topup --employer <EMPLOYER_ADDRESS> --stream_id 1
+```
 
 ---
 
@@ -587,6 +603,51 @@ stellar contract invoke --id <STREAM_ID> --source <ANY_KEY> --network testnet \
 ```
 
 *(Note: `get_auto_topup` is also supported as an alias.)*
+
+---
+
+### `maybe_auto_topup` (internal)
+
+Not a public entry point. Runs automatically at the end of `withdraw` and, per stream, inside `withdraw_all`. Integrators cannot call it directly; it is documented here so its behaviour is predictable.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `stream` | `&mut Stream` | Stream being withdrawn from |
+| `now` | `u64` | Current ledger timestamp |
+
+**Behaviour:** if an `AutoTopupConfig` exists, the stream has not reached `stop_time`, and `deposit - withdrawn < trigger_threshold`, it pulls `min(topup_amount, max_total - total_topped_up)` from the employer via `transfer_from`, adds it to `deposit`, reactivates an `Exhausted` stream, increments `total_topped_up`, and emits `at_up`.
+
+**Auth:** none of its own — it relies on the employer's prior token `approve` of the stream contract.
+
+**Returns:** nothing
+
+**Errors:** never panics. The top-up is silently skipped (the withdraw still succeeds) when no config exists, the stream has ended, the cap is reached, or the allowance/balance is insufficient.
+
+---
+
+### Auto top-up worked example
+
+```bash
+# 1. Employer approves the stream contract to spend up to max_total
+stellar contract invoke --id <TOKEN_ID> --source <EMPLOYER_KEY> --network testnet \
+  -- approve --from <EMPLOYER_ADDRESS> --spender <STREAM_ID> \
+  --amount 5000000 --expiration_ledger <LEDGER>
+
+# 2. Configure auto top-up: refill 500000 whenever remaining < 100000, up to 5000000 total
+stellar contract invoke --id <STREAM_ID> --source <EMPLOYER_KEY> --network testnet \
+  -- set_auto_topup --employer <EMPLOYER_ADDRESS> --stream_id 1 \
+  --trigger_threshold 100000 --topup_amount 500000 --max_total 5000000
+
+# 3. Once remaining balance would drop below 100000, the employee withdraws
+stellar contract invoke --id <STREAM_ID> --source <EMPLOYEE_KEY> --network testnet \
+  -- withdraw --employee <EMPLOYEE_ADDRESS> --stream_id 1
+
+# 4. Verify the top-up fired: total_topped_up should now be 500000
+stellar contract invoke --id <STREAM_ID> --source <ANY_KEY> --network testnet \
+  -- get_auto_topup_config --stream_id 1
+```
+
+The withdraw transaction also emits an `at_up` event (`["v1", "at_up", 1]` → `[500000, 500000]`), and `get_stream` shows `deposit` increased by 500000.
 
 ---
 
@@ -727,6 +788,33 @@ Before applying the new rate, any tokens accrued since the last withdrawal are s
 stellar contract invoke --id <STREAM_ID> --source <EMPLOYER_KEY> --network testnet \
   -- update_rate --employer <EMPLOYER_ADDRESS> --stream_id 1 --new_rate 20
 ```
+
+**Worked Example (numeric):**
+
+Initial state:
+- Stream created at time T=0 with deposit=10,000, rate=10 tokens/sec, no stop time
+- At T=0: withdrawn=0, pending_accrual=0
+
+Period 1 (rate A = 10/s):
+- Advance to T=100: 100 seconds elapsed at old rate
+- `claimable()` = 100 × 10 = 1,000 tokens
+
+Rate change:
+- Call `update_rate` at T=100 to set rate B = 20/s
+- Before applying new rate, accrued 1,000 tokens are banked into `pending_accrual`
+- After update: `pending_accrual` = 1,000, `rate_per_second` = 20, `last_withdraw_time` = 100
+
+Period 2 (rate B = 20/s):
+- Advance to T=150: 50 more seconds at new rate (20/s)
+- New accrual = 50 × 20 = 1,000 tokens
+- Total `claimable()` = `pending_accrual` + new accrual = 1,000 + 1,000 = 2,000
+
+Withdraw:
+- `withdraw()` at T=150 pays out 2,000 tokens total (covering both periods)
+- After withdraw: `withdrawn` = 2,000, `pending_accrual` = 0
+- Future accrual resumes from T=150 at 20/s
+
+*This matches `test_update_rate_withdraw_clears_pending_accrual`.*
 
 ---
 

@@ -36,3 +36,49 @@ jobs:
 
       - name: Run integration tests
         run: make integration-test
+
+      - name: Verify deployed contract checksum
+        if: ${{ env.CONTRACT_ID != '' && env.WASM_PATH != '' }}
+        env:
+          CONTRACT_ID: ${{ vars.CONTRACT_ID }}
+          WASM_PATH: ${{ vars.WASM_PATH }}
+          STELLAR_NETWORK: ${{ vars.STELLAR_NETWORK || 'testnet' }}
+        run: |
+          set -euo pipefail
+
+          if [ ! -f "$WASM_PATH" ]; then
+            echo "::error::Local WASM artifact not found at $WASM_PATH"
+            exit 1
+          fi
+
+          local_hash=$(sha256sum "$WASM_PATH" | awk '{print $1}')
+
+          info_output=$(stellar contract info --id "$CONTRACT_ID" --network "$STELLAR_NETWORK")
+          deployed_hash=$(printf '%s\n' "$info_output" | grep -iE 'wasm[ _-]?hash' | head -n1 | grep -oE '[0-9a-fA-F]{64}' | head -n1 | tr 'A-F' 'a-f')
+
+          if [ -z "$deployed_hash" ]; then
+            echo "::error::Could not extract WASM hash from 'stellar contract info' output"
+            printf '%s\n' "$info_output"
+            exit 1
+          fi
+
+          {
+            echo "## Contract checksum verification"
+            echo ""
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Contract ID | \`$CONTRACT_ID\` |"
+            echo "| Network | \`$STELLAR_NETWORK\` |"
+            echo "| Local WASM | \`$WASM_PATH\` |"
+            echo "| Local SHA256 | \`$local_hash\` |"
+            echo "| Deployed WASM hash | \`$deployed_hash\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$local_hash" != "$deployed_hash" ]; then
+            echo "| Result | ❌ MISMATCH |" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::Deployed WASM hash ($deployed_hash) does not match local SHA256 ($local_hash)"
+            exit 1
+          fi
+
+          echo "| Result | ✅ MATCH |" >> "$GITHUB_STEP_SUMMARY"
+          echo "Deployed WASM hash matches local artifact: $local_hash"

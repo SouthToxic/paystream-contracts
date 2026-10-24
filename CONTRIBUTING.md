@@ -22,6 +22,7 @@ Thank you for contributing to PayStream — a Soroban smart contract system for 
 - [Pull Request Process](#pull-request-process)
 - [Changelog](#changelog)
 - [Testing Requirements](#testing-requirements)
+  - [Updating Snapshots](#updating-snapshots)
 - [Writing Fuzz Targets](#writing-fuzz-targets)
 - [Code Review Expectations](#code-review-expectations)
 - [Release Process](#release-process)
@@ -340,7 +341,9 @@ Looking for tasks to contribute to?
 3. Stuck? Ping a maintainer in [GitHub Discussions](https://github.com/veracindarella/paystream-contracts/discussions) — every good first issue has a mentor available.
 4. Keep the PR small and reference the issue with `Closes #<number>`.
 
-New to Rust, Soroban or open source? Start with the step-by-step [First Contribution Guide](docs/first-contribution.md).
+New to Rust, Soroban or open source? Start with the step-by-step [First Contribution Guide](docs/first-contribution.md). Coming from Ethereum/EVM? Read the [Stellar Primer](docs/stellar-primer.md) first.
+
+> **Adding a `DataKey`?** Update the table in [docs/storage-layout.md](docs/storage-layout.md) in the same PR. **Making a significant design decision?** Add an ADR under [docs/adr/](docs/adr/README.md).
 
 ---
 
@@ -577,28 +580,33 @@ SOROBAN_TEST_SNAPSHOTS=update cargo test --package paystream-stream events::test
 
 Always review the diff of regenerated snapshot files before committing. A snapshot change means the on-chain event schema changed — indexers and off-chain consumers must be updated in the same PR.
 
-#### Updating the lifecycle golden file
+### Updating Snapshots
 
-The full lifecycle golden file is stored at:
+PayStream uses the Soroban SDK's built-in snapshot testing (not `insta`), so the project equivalent of `INSTA_UPDATE=unseen cargo test` is the `SOROBAN_TEST_SNAPSHOTS` variable. Snapshot JSON files live in:
 
-```
-contracts/stream/test_snapshots/lifecycle/full_lifecycle.json
-```
+- [`contracts/stream/test_snapshots/`](contracts/stream/test_snapshots/)
+- [`contracts/token/test_snapshots/`](contracts/token/test_snapshots/)
 
-It captures serialised stream state at each step of the lifecycle (`create` → `top_up` →
-`withdraw` → `pause` → `resume` → `cancel`) and is compared by
-`test_full_stream_lifecycle_golden`.  The file must be regenerated whenever the `Stream`
-struct fields or their default values change.
-
-To regenerate:
+Regenerate snapshots for the whole workspace or one package:
 
 ```bash
-UPDATE_GOLDEN=1 cargo test --package paystream-stream test_full_stream_lifecycle_golden
+SOROBAN_TEST_SNAPSHOTS=update cargo test
+SOROBAN_TEST_SNAPSHOTS=update cargo test --package paystream-stream
 ```
 
-Review the diff carefully before committing.  A change to the golden file means the
-observable on-chain stream schema has changed; update any off-chain consumers (indexers,
-dashboards, SDKs) in the same PR.
+Then review with `git diff -- '*/test_snapshots/*'` before committing.
+
+**Expected (intentional) changes** — update the snapshot and commit it in the same PR:
+- You changed an event topic/payload, storage layout, error code, or return value on purpose.
+- You added a new test (new snapshot file) or renamed one.
+- You bumped `soroban-sdk`, which can change snapshot metadata.
+
+**Unexpected changes (likely a regression)** — do not regenerate; fix the code:
+- The diff touches tests or contracts unrelated to your change.
+- Balances, amounts, ledger entries, or event data changed when you only refactored.
+- Snapshot files were deleted without the corresponding test being removed.
+
+If in doubt, mention the snapshot diff in your PR description so reviewers can confirm it is intentional.
 
 ---
 
